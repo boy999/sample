@@ -1,0 +1,1860 @@
+/*
+    Copyright (C) 1999-2008 by Mark D. Hill and David A. Wood for the
+    Wisconsin Multifacet Project.  Contact: gems@cs.wisc.edu
+    http://www.cs.wisc.edu/gems/
+
+    --------------------------------------------------------------------
+
+    This file is part of Garnet (Princeton's interconnect model),
+    a component of the Multifacet GEMS (General Execution-driven 
+    Multiprocessor Simulator) software toolset originally developed at 
+    the University of Wisconsin-Madison.
+
+    Garnet was developed by Niket Agarwal at Princeton University. Orion was
+    developed by Princeton University.
+
+    Substantial further development of Multifacet GEMS at the
+    University of Wisconsin was performed by Alaa Alameldeen, Brad
+    Beckmann, Jayaram Bobba, Ross Dickson, Dan Gibson, Pacia Harper,
+    Derek Hower, Milo Martin, Michael Marty, Carl Mauer, Michelle Moravan,
+    Kevin Moore, Andrew Phelps, Manoj Plakal, Daniel Sorin, Haris Volos, 
+    Min Xu, and Luke Yen.
+    --------------------------------------------------------------------
+
+    If your use of this software contributes to a published paper, we
+    request that you (1) cite our summary paper that appears on our
+    website (http://www.cs.wisc.edu/gems/) and (2) e-mail a citation
+    for your published paper to gems@cs.wisc.edu.
+
+    If you redistribute derivatives of this software, we request that
+    you notify us and either (1) ask people to register with us at our
+    website (http://www.cs.wisc.edu/gems/) or (2) collect registration
+    information and periodically send it to us.
+
+    --------------------------------------------------------------------
+
+    Multifacet GEMS is free software; you can redistribute it and/or
+    modify it under the terms of version 2 of the GNU General Public
+    License as published by the Free Software Foundation.
+
+    Multifacet GEMS is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with the Multifacet GEMS; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+    02111-1307, USA
+
+    The GNU General Public License is contained in the file LICENSE.
+
+### END HEADER ###
+*/
+/*
+ * GarnetNetwork_d.C
+ *
+ * Niket Agarwal, Princeton University
+ *
+ * */
+
+#include "GarnetNetwork_d.h"
+#include "MachineType.h"
+#include "NetworkInterface_d.h"
+#include "MessageBuffer.h"
+#include "Router_d.h"
+#include "Topology.h"	
+#include "NetworkLink_d.h"
+#include "CreditLink_d.h"
+#include "NetDest.h"
+#include "VCallocator_d.h"
+#include "RequestMsg.h"
+#include "ResponseMsg.h"
+#include "CacheMsg.h"
+
+GarnetNetwork_d::GarnetNetwork_d(int nodes)
+{
+	m_nodes = MachineType_base_number(MachineType_NUM); // Total nodes in network
+	m_virtual_networks = NUMBER_OF_VIRTUAL_NETWORKS; // Number of virtual networks = number of message classes in the coherence protocol
+	m_ruby_start = 0;
+
+    m_setup_flits = 0;
+	m_free_flits = 0;
+
+    m_flits_recieved = 0;
+	m_flits_injected = 0;
+	m_network_latency = 0.0;
+	m_network_latency_I = 0.0;
+	m_network_latency_VA = 0.0;
+	m_network_latency_SA = 0.0;
+	m_network_latency_ST = 0.0;
+	m_network_latency_LT = 0.0;
+	m_queueing_latency = 0.0;
+   
+    m_setup_network_latency = 0.0;
+    m_free_network_latency = 0.0;
+
+    m_setup_queueing_latency = 0.0;
+    m_free_queueing_latency = 0.0;
+
+	m_router_ptr_vector.clear();
+    
+
+	// Allocate to and from queues
+	m_toNetQueues.setSize(m_nodes); 	// Queues that are getting messages from protocol
+	m_fromNetQueues.setSize(m_nodes); 	// Queues that are feeding the protocol
+	m_in_use.setSize(m_virtual_networks);
+  	m_ordered.setSize(m_virtual_networks);
+    	for (int i = 0; i < m_virtual_networks; i++) 
+	{
+		m_in_use[i] = false;
+		m_ordered[i] = false;
+	}
+
+	for (int node = 0; node < m_nodes; node++) 
+	{
+		//Setting how many vitual message buffers will there be per Network Queue
+		m_toNetQueues[node].setSize(m_virtual_networks);
+		m_fromNetQueues[node].setSize(m_virtual_networks);
+
+		for (int j = 0; j < m_virtual_networks; j++) 
+		{ 
+			m_toNetQueues[node][j] = new MessageBuffer();	// Instantiating the Message Buffers that interact with the coherence protocol
+            m_toNetQueues[node][j]->setOrdering(false);
+			m_fromNetQueues[node][j] = new MessageBuffer();
+            m_fromNetQueues[node][j]->setOrdering(false);
+		}
+	}
+
+	// Setup the network switches
+	//m_topology_ptr = new Topology(this, m_nodes, false, TopoType_Default);
+    if (NetworkConfig::isCustomNetwork())
+    {
+    	m_topology_ptr = new Topology(this, m_nodes, false, TopoType_Custom);
+    }	
+    else if (NetworkConfig::isButflyNetwork())
+    {
+    	m_topology_ptr = new Topology(this, m_nodes, false, TopoType_Butfly);
+    }
+    else if (NetworkConfig::isClosNetwork())
+    {
+    	m_topology_ptr = new Topology(this, m_nodes, false, TopoType_Clos);
+    }
+    else if (NetworkConfig::isEVCNetwork())
+    {
+    	m_topology_ptr = new Topology(this, m_nodes, false, TopoType_EVC);
+    }
+    else
+    {
+        m_topology_ptr = new Topology(this, m_nodes, false, TopoType_Default);
+    }
+
+	int number_of_routers = m_topology_ptr->numSwitches();
+	for (int i=0; i<number_of_routers; i++) {
+		m_router_ptr_vector.insertAtBottom(new Router_d(i, this));
+	}
+	
+	for (int i=0; i < m_nodes; i++) {
+		NetworkInterface_d *ni = new NetworkInterface_d(i, m_virtual_networks, this);
+		ni->addNode(m_toNetQueues[i], m_fromNetQueues[i]);
+		m_ni_ptr_vector.insertAtBottom(ni);
+	}
+
+	m_topology_ptr->createLinks(false);  // false because this isn't a reconfiguration
+	for(int i = 0; i < m_router_ptr_vector.size(); i++)
+	{
+		m_router_ptr_vector[i]->init();
+	}
+
+#ifdef CS_NOC
+    /*****************circuit switch*********************/
+    //circuit switched setup network
+    m_num_CSNOC = 2;
+//    cout << "CSNOC - -before m_setupnet_ptr";
+    m_circuitnet_ptr.setSize(m_num_CSNOC);
+    for(int i = 0; i < m_num_CSNOC; i++)
+    {
+        m_circuitnet_ptr[i] = new CircuitNetwork(this, m_nodes, i);
+    }
+//    m_setupnet_ptr = new SetupNetwork(m_circuitnet_ptr, m_nodes);
+//    cout << "CSNOC - -after m_setupnet_ptr";
+#endif //CS_NOC
+}
+
+GarnetNetwork_d::~GarnetNetwork_d()
+{
+	for (int i = 0; i < m_nodes; i++) 
+	{
+		m_toNetQueues[i].deletePointers();
+		m_fromNetQueues[i].deletePointers();
+	}
+	m_router_ptr_vector.deletePointers();
+	m_ni_ptr_vector.deletePointers();
+	m_link_ptr_vector.deletePointers();
+	m_creditlink_ptr_vector.deletePointers();
+	delete m_topology_ptr;
+}
+
+void GarnetNetwork_d::reset()
+{
+	for (int node = 0; node < m_nodes; node++) 
+	{
+		for (int j = 0; j < m_virtual_networks; j++) 
+		{
+			m_toNetQueues[node][j]->clear();
+			m_fromNetQueues[node][j]->clear();
+		}
+	}
+}
+
+/* 
+ * This function creates a link from the Network Interface (NI) into the Network. 
+ * It creates a Network Link from the NI to a Router and a Credit Link from  
+ * the Router to the NI
+*/
+
+void GarnetNetwork_d::makeInLink(NodeID src, SwitchID dest, const NetDest& routing_table_entry, int link_latency, int bw_multiplier, bool isReconfiguration)
+{
+	assert(src < m_nodes);
+	
+	if(!isReconfiguration)
+	{	
+		NetworkLink_d *net_link = new NetworkLink_d(m_link_ptr_vector.size(), link_latency, this, LinkType_In, src, src, dest);
+		CreditLink_d *credit_link = new CreditLink_d(m_creditlink_ptr_vector.size());
+		m_link_ptr_vector.insertAtBottom(net_link);
+		m_creditlink_ptr_vector.insertAtBottom(credit_link);
+
+		m_router_ptr_vector[dest]->addInPort(net_link, credit_link);
+		m_ni_ptr_vector[src]->addOutPort(net_link, credit_link, m_router_ptr_vector[dest]);
+	}
+	else 
+	{
+		ERROR_MSG("Fatal Error:: Reconfiguration not allowed here");
+		// do nothing
+	}
+}
+
+/* 
+ * This function creates a link from the Network to a NI. 
+ * It creates a Network Link from a Router to the NI and 
+ * a Credit Link from NI to the Router 
+*/
+
+void GarnetNetwork_d::makeOutLink(SwitchID src, NodeID dest, const NetDest& routing_table_entry, int link_latency, int link_weight, int bw_multiplier, bool isReconfiguration)
+{
+	assert(dest < m_nodes);
+	assert(src < m_router_ptr_vector.size());
+	assert(m_router_ptr_vector[src] != NULL);
+	
+	if(!isReconfiguration)
+	{
+		NetworkLink_d *net_link = new NetworkLink_d(m_link_ptr_vector.size(), link_latency, this, LinkType_Out, dest, src, dest);
+		CreditLink_d *credit_link = new CreditLink_d(m_creditlink_ptr_vector.size());
+		m_link_ptr_vector.insertAtBottom(net_link);
+		m_creditlink_ptr_vector.insertAtBottom(credit_link);
+
+		m_router_ptr_vector[src]->addOutPort(net_link, routing_table_entry, link_weight, credit_link);
+		m_ni_ptr_vector[dest]->addInPort(net_link, credit_link, m_router_ptr_vector[src]);
+	} 
+	else 
+	{
+		ERROR_MSG("Fatal Error:: Reconfiguration not allowed here");
+		//do nothing
+	}
+}
+
+/* 
+ * This function creates a internal network links 
+*/
+
+void GarnetNetwork_d::makeInternalLink(SwitchID src, SwitchID dest, const NetDest& routing_table_entry, int link_latency, int link_weight, int bw_multiplier, bool isReconfiguration)
+{
+	if(!isReconfiguration)
+	{
+		NetworkLink_d *net_link = new NetworkLink_d(m_link_ptr_vector.size(), link_latency, this, LinkType_Internal, -1, src, dest);
+		CreditLink_d *credit_link = new CreditLink_d(m_creditlink_ptr_vector.size());
+		m_link_ptr_vector.insertAtBottom(net_link);
+		m_creditlink_ptr_vector.insertAtBottom(credit_link);
+
+		m_router_ptr_vector[dest]->addInPort(net_link, credit_link);
+		m_router_ptr_vector[src]->addOutPort(net_link, routing_table_entry, link_weight, credit_link);
+	}
+	else
+	{	
+		ERROR_MSG("Fatal Error:: Reconfiguration not allowed here");
+		// do nothing
+	}
+}
+
+void GarnetNetwork_d::checkNetworkAllocation(NodeID id, bool ordered, int network_num)
+{
+	ASSERT(id < m_nodes);
+	ASSERT(network_num < m_virtual_networks);
+
+	if (ordered) 
+	{
+		m_ordered[network_num] = true;
+	}
+	m_in_use[network_num] = true;
+}
+
+MessageBuffer* GarnetNetwork_d::getToNetQueue(NodeID id, bool ordered, int network_num)
+{
+	checkNetworkAllocation(id, ordered, network_num);
+	return m_toNetQueues[id][network_num];
+}
+
+MessageBuffer* GarnetNetwork_d::getFromNetQueue(NodeID id, bool ordered, int network_num)
+{
+	checkNetworkAllocation(id, ordered, network_num);
+	return m_fromNetQueues[id][network_num];
+}
+
+void GarnetNetwork_d::clearStats()
+{
+	m_ruby_start = g_eventQueue_ptr->getTime();
+}
+
+Time GarnetNetwork_d::getRubyStartTime()
+{
+	return m_ruby_start;
+}
+
+void GarnetNetwork_d::printStats(ostream& out) const
+{	
+    double average_link_utilization = 0;
+    double average_streamlink_utilization = 0;
+	Vector<double > average_vc_load;   
+    std::map<int, long> router_utilization;
+    std::map<int, pair<int, long> > link_utilization;
+    router_utilization.clear();
+//#ifdef CS_NOC
+    
+//    out << "In CS_NOC" << endl;
+//    average_vc_load.setSize(m_virtual_networks*1);
+//#else
+    average_vc_load.setSize(m_virtual_networks*NetworkConfig::getVCsPerClass());
+//#endif
+
+    Vector<double > average_vc_streamload;
+//#ifdef CS_NOC
+//    average_vc_streamload.setSize(m_virtual_networks*1);
+//#else
+    average_vc_streamload.setSize(m_virtual_networks*NetworkConfig::getVCsPerClass());
+//#endif
+
+//#ifdef CS_NOC
+//	for(int i = 0; i < m_virtual_networks*1; i++)
+//#else    
+	for(int i = 0; i < m_virtual_networks*NetworkConfig::getVCsPerClass(); i++)
+//#endif
+	{
+		average_vc_load[i] = 0;
+		average_vc_streamload[i] = 0;
+	}
+
+	out << endl;
+	out << "Network Stats" << endl;
+	out << "-----PSNoC Begin:--------" << endl;
+	out << endl;
+	for(int i = 0; i < m_link_ptr_vector.size(); i++) 
+	{
+		average_link_utilization += (double(m_link_ptr_vector[i]->getLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start));
+		average_streamlink_utilization += (double(m_link_ptr_vector[i]->getStreamLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start));
+
+        if (m_link_ptr_vector[i]->getLinkType() == LinkType_In)
+        {
+	        out << "In Link : " << MachineType_to_string(m_link_ptr_vector[i]->getMachType())
+                << " " << m_link_ptr_vector[i]->getLinkSrc()
+                << " -> Router"
+                << " " << m_link_ptr_vector[i]->getLinkDest() << endl;
+            out << "\t Utilization :: " 
+                << (double(m_link_ptr_vector[i]->getLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start))
+                << " flits/cycle" << endl;
+            out << "\t Stream Utilization :: " 
+                << (double(m_link_ptr_vector[i]->getStreamLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start))
+                << " flits/cycle" << endl;
+
+            if( router_utilization.find(m_link_ptr_vector[i]->getLinkDest()) == router_utilization.end() )
+            {
+              router_utilization[m_link_ptr_vector[i]->getLinkDest()] = m_link_ptr_vector[i]->getLinkUtilization();
+            }
+            else
+            {
+              router_utilization[m_link_ptr_vector[i]->getLinkDest()] += m_link_ptr_vector[i]->getLinkUtilization();
+            }
+        }
+        else if (m_link_ptr_vector[i]->getLinkType() == LinkType_Out)
+        {
+	        out << "Out Link : Router " << m_link_ptr_vector[i]->getLinkSrc()
+                << " -> " << MachineType_to_string(m_link_ptr_vector[i]->getMachType())
+                << " " << m_link_ptr_vector[i]->getLinkDest() << endl;
+            out << "\t Utilization :: " 
+                << (double(m_link_ptr_vector[i]->getLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start))
+                << " flits/cycle" << endl;
+            out << "\t Stream Utilization :: " 
+                << (double(m_link_ptr_vector[i]->getStreamLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start))
+                << " flits/cycle" << endl;
+
+        }
+        else if (m_link_ptr_vector[i]->getLinkType() == LinkType_Internal)
+        {
+	        out << "Internal Link : Router " << m_link_ptr_vector[i]->getLinkSrc()
+                << " -> Router"
+                << " " << m_link_ptr_vector[i]->getLinkDest() << endl;
+            out << "\t Utilization :: " 
+                << (double(m_link_ptr_vector[i]->getLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start))
+                << " flits/cycle" << endl;
+            out << "\t Stream Utilization :: " 
+                << (double(m_link_ptr_vector[i]->getStreamLinkUtilization())) / (double(g_eventQueue_ptr->getTime()-m_ruby_start))
+                << " flits/cycle" << endl;
+
+            int link_length = abs(m_link_ptr_vector[i]->getLinkSrc() / NOC_WIDTH - m_link_ptr_vector[i]->getLinkDest() / NOC_WIDTH) + abs(m_link_ptr_vector[i]->getLinkSrc() % NOC_WIDTH - m_link_ptr_vector[i]->getLinkDest() % NOC_WIDTH);
+            if (link_utilization.find(link_length) == link_utilization.end())
+            {
+                link_utilization[link_length] = make_pair(1, m_link_ptr_vector[i]->getLinkUtilization());
+            }
+            else
+            {
+                link_utilization[link_length].first += 1;
+                link_utilization[link_length].second += m_link_ptr_vector[i]->getLinkUtilization();
+            }
+
+            if( router_utilization.find(m_link_ptr_vector[i]->getLinkDest()) == router_utilization.end() )
+            {
+              router_utilization[m_link_ptr_vector[i]->getLinkDest()] = m_link_ptr_vector[i]->getLinkUtilization();
+            }
+            else
+            {
+              router_utilization[m_link_ptr_vector[i]->getLinkDest()] += m_link_ptr_vector[i]->getLinkUtilization();
+            }
+
+        }
+        else
+        {
+            assert(0 && "Error LinkType");
+        }
+      
+
+		Vector<int > vc_load = m_link_ptr_vector[i]->getVcLoad();
+		Vector<int > vc_streamload = m_link_ptr_vector[i]->getVcStreamLoad();
+		for(int j = 0; j < vc_load.size(); j++)
+		{
+//#ifdef CS_NOC
+//			assert(vc_load.size() == 1*m_virtual_networks);
+//#else            
+			assert(vc_load.size() == NetworkConfig::getVCsPerClass()*m_virtual_networks);
+//#endif
+			average_vc_load[j] += vc_load[j];
+			
+            average_vc_streamload[j] += vc_streamload[j];
+		}
+	}
+
+    out << "=======================" << endl;
+    out << "For energy estimation:" << endl;
+
+    for(map<int, pair<int, long> >::iterator it = link_utilization.begin(); it != link_utilization.end(); it++)
+    {
+        out << "link length (hops): " << it->first << " ; ";
+        out << "num of link: " << it->second.first << " ; ";        
+        out << "links utilization: " << (double)it->second.second / (double) (g_eventQueue_ptr->getTime() - m_ruby_start) << " flit per cycle" << endl;
+    }
+
+    for(map<int, long>::iterator it = router_utilization.begin(); it != router_utilization.end(); it++)
+    {
+        out << "Router id: " << it->first << " ; ";
+        out << "Router utilization: " << (double)it->second / (double) (g_eventQueue_ptr->getTime() - m_ruby_start) << " flit per cycle";
+        out << endl;
+    }
+
+	average_link_utilization = average_link_utilization/m_link_ptr_vector.size();
+	average_streamlink_utilization = average_streamlink_utilization/m_link_ptr_vector.size();
+	out << "Average Link Utilization :: " << average_link_utilization << " flits/cycle" << endl;
+	out << "Average Stream Link Utilization :: " << average_streamlink_utilization << " flits/cycle" << endl;
+	out << "-------------" << endl;
+
+//#ifdef CS_NOC
+//	for(int i = 0; i < 1*NUMBER_OF_VIRTUAL_NETWORKS; i++)
+//#else
+	for(int i = 0; i < NetworkConfig::getVCsPerClass()*NUMBER_OF_VIRTUAL_NETWORKS; i++)
+//#endif //CS_NOC
+	{
+		average_vc_load[i] = (double(average_vc_load[i]) / (double(g_eventQueue_ptr->getTime()) - m_ruby_start));
+		out << "Average VC Load [" << i << "] = " << average_vc_load[i] << " flits/cycle " << endl;
+
+        average_vc_streamload[i] = (double(average_vc_streamload[i]) / (double(g_eventQueue_ptr->getTime()) - m_ruby_start));
+        out << "Average VC Stream Load [" << i << "] = " << average_vc_streamload[i] << " flits/cycle " << endl;
+	}
+	out << "-------------" << endl;
+
+	out << "Total flits injected = " << m_flits_injected << endl;
+	out << "Total flits recieved = " << m_flits_recieved << endl;
+	out << "Average network latency = " << ((double) m_network_latency/ (double) m_flits_recieved)<< endl;
+	out << "Average network latency I_ = " << ((double) m_network_latency_I / (double) m_flits_recieved)<< endl;
+	out << "Average network latency VA_ = " << ((double) m_network_latency_VA / (double) m_flits_recieved)<< endl;
+	out << "Average network latency SA_ = " << ((double) m_network_latency_SA / (double) m_flits_recieved)<< endl;
+	out << "Average network latency ST_ = " << ((double) m_network_latency_ST / (double) m_flits_recieved)<< endl;
+	out << "Average network latency LT_ = " << ((double) m_network_latency_LT / (double) m_flits_recieved)<< endl;
+	out << "Average queueing latency = " << ((double) m_queueing_latency/ (double) m_flits_recieved)<< endl;
+	out << "Average latency = " << ((double)  (m_queueing_latency + m_network_latency) / (double) m_flits_recieved)<< endl;
+	out << "-------------" << endl;
+
+	double m_total_link_power = 0.0;
+	double m_total_link_area = 0.0;
+    RouterPowerArea_d m_total_router_powerarea;    
+
+	for(int i = 0; i < m_link_ptr_vector.size(); i++)
+	{
+//        out << "The link id - " << m_link_ptr_vector[i]->get_id() << endl;
+//        out << "\t m_link_utilized = " << m_link_ptr_vector[i]->getLinkUtilization() << endl;
+//        out << "\t m_flit_width = " << m_link_ptr_vector[i]->get_flit_width() << endl;
+//        out << "\t link power = " << m_link_ptr_vector[i]->calculate_power() << " W" << endl;
+		m_total_link_power += m_link_ptr_vector[i]->calculate_power();
+
+		m_total_link_area += m_link_ptr_vector[i]->calculate_area();
+	}
+
+    double m_num_setupreq = 0.0;
+    double m_num_freereq = 0.0;
+    double m_num_succ_exist_setupreq = 0.0;
+    double m_num_succ_new_setupreq = 0.0;
+    double m_num_fail_freeing_setupreq = 0.0;
+    double m_num_fail_conflict_setupreq = 0.0;
+    int m_streaming_flit = 0;
+    int m_streaming_flit_nosupport = 0;
+
+    for(int i = 0; i < m_ni_ptr_vector.size(); i++)
+    {
+        m_num_setupreq += m_ni_ptr_vector[i]->m_num_setupreq;
+        m_num_freereq += m_ni_ptr_vector[i]->m_num_freereq;
+        m_num_succ_exist_setupreq += m_ni_ptr_vector[i]->m_num_succ_exist_setupreq;
+        m_num_succ_new_setupreq += m_ni_ptr_vector[i]->m_num_succ_new_setupreq;
+        m_num_fail_freeing_setupreq += m_ni_ptr_vector[i]->m_num_fail_freeing_setupreq;
+        m_num_fail_conflict_setupreq += m_ni_ptr_vector[i]->m_num_fail_conflict_setupreq;
+        m_streaming_flit += m_ni_ptr_vector[i]->m_streaming_flit;
+        m_streaming_flit_nosupport += m_ni_ptr_vector[i]->m_streaming_flit_nosupport;
+    }
+
+    out << "Total setup request = " << m_num_setupreq << endl;
+    out << "Total free request = " << m_num_freereq << endl;
+    out << "Total success setup request due to existing paths = " << m_num_succ_exist_setupreq << endl;
+    out << "Total success setup request due to setting up new paths = " << m_num_succ_new_setupreq << endl;
+    out << "Total failure setup request due to freeing the exact path = " << m_num_fail_freeing_setupreq << endl;
+    out << "Total failure setup request due to conflicts with existing paths = " << m_num_fail_conflict_setupreq << endl;
+
+    out << "Total setup flits received = " << m_setup_flits << endl;
+    out << "Total free flits received = " << m_free_flits << endl;
+
+	out << "Average setup flit network latency = " << ((double) m_setup_network_latency/ (double) m_setup_flits)<< endl;
+	out << "Average setup flit queueing latency = " << ((double) m_setup_queueing_latency/ (double) m_setup_flits)<< endl;
+	out << "Average free flit network latency = " << ((double) m_free_network_latency/ (double) m_free_flits)<< endl;
+	out << "Average free flit queueing latency = " << ((double) m_free_queueing_latency/ (double) m_free_flits)<< endl;
+
+	out << "-------------" << endl;
+    out << "Total number of streaming flits = " << m_streaming_flit << endl;
+    out << "Total number of streaming flits go through PSNoC = " << m_streaming_flit_nosupport << endl;
+	out << "-------------" << endl;
+	out << "CSNoC Stream Data Profiling" << endl;
+   
+    for (map<string,int>::const_iterator it=m_streamData_cs.begin(); it!=m_streamData_cs.end(); ++it)
+    {
+        out << "Data type: " << it->first << " => number of flits: " << it->second << endl;
+    }
+    out << "-------------" << endl;
+    out << "PSNoC Stream Data Profiling" << endl;
+    for (map<string,int>::const_iterator it=m_streamData_ps.begin(); it!=m_streamData_ps.end(); ++it)
+    {
+        out << "Data type: " << it->first << " => number of flits: " << it->second << endl;
+    }
+
+	out << "-------------" << endl;
+
+#ifdef SPECULATIVE
+     double m_total_success_speculation = 0.0;
+     double m_total_failure_speculation = 0.0;
+#endif
+
+
+
+    for(int i = 0; i < m_router_ptr_vector.size(); i++)
+    {
+        //m_total_router_power += m_router_ptr_vector[i]->calculate_power();
+
+#ifdef SPECULATIVE
+        m_total_success_speculation += m_router_ptr_vector[i]->m_vc_alloc->get_success_speculation();
+        m_total_failure_speculation += m_router_ptr_vector[i]->m_vc_alloc->get_failure_speculation();
+#endif
+        m_router_ptr_vector[i]->calculate_power();
+        m_total_router_powerarea.AddPower(m_router_ptr_vector[i]->GetRouterPowerArea());
+        m_router_ptr_vector[i]->calculate_area();
+        m_total_router_powerarea.AddArea(m_router_ptr_vector[i]->GetRouterPowerArea());
+	}
+
+#ifdef SPECULATIVE
+    out << "Speculation Status" << endl;
+    out << "Total Success Speculation : " << m_total_success_speculation << endl;
+    out << "Total Failure Speculation : " << m_total_failure_speculation << endl;
+    out << "------------------" << endl;
+#endif
+
+	out << "Total Link Power = " << m_total_link_power << " W " << endl;
+	out << "Total Link Area = " << m_total_link_area << " uM^2 " << endl;
+    m_total_router_powerarea.PrintPower(out);
+    m_total_router_powerarea.PrintArea(out);
+	out << "-----PSNoC End--------" << endl;
+    
+    out << "-----CSNoC-0 Begin:--------" << endl;
+    m_circuitnet_ptr[0]->printStats(out); 
+    out << "-----CSNoC-0 End--------" << endl;
+
+    out << "-----CSNoC-1 Begin:--------" << endl;
+    m_circuitnet_ptr[1]->printStats(out);
+    out << "-----CSNoC-1 End--------" << endl;
+}
+
+void GarnetNetwork_d::printConfig(ostream& out) const
+{
+	out << endl;
+	out << "Network Configuration" << endl;
+	out << "---------------------" << endl;
+	out << "network: GarnetNetwork_d" << endl;
+	out << "topology: " << g_NETWORK_TOPOLOGY << endl;
+	out << endl;
+
+	for (int i = 0; i < m_virtual_networks; i++) 
+	{
+		out << "virtual_net_" << i << ": ";
+		if (m_in_use[i]) 
+		{
+			out << "active, ";
+			if (m_ordered[i]) 
+			{
+				out << "ordered" << endl;
+			} 
+			else 
+			{
+				out << "unordered" << endl;
+			}
+		} 
+		else 
+		{
+			out << "inactive" << endl;
+		}
+	}
+  	out << endl;
+
+	for(int i = 0; i < m_ni_ptr_vector.size(); i++)
+	{
+		m_ni_ptr_vector[i]->printConfig(out);
+	}
+	for(int i = 0; i < m_router_ptr_vector.size(); i++)
+	{
+		m_router_ptr_vector[i]->printConfig(out);
+	}	
+	if (g_PRINT_TOPOLOGY) 
+	{
+		m_topology_ptr->printConfig(out);
+	}
+}
+
+void GarnetNetwork_d::print(ostream& out) const
+{
+	out << "[GarnetNetwork_d]";
+}
+
+pair<int, int> findLoc(int nodeId)
+{
+    int x, y; // x is the column index; y is the row index
+    int noc_width = NOC_WIDTH;
+    //To verify whether the function works correctly, check with Network File
+    if ( nodeId < MachineType_base_number(MachineType_L1Cache)
+               && nodeId >= MachineType_base_number(MachineType_L2Cache) )
+    {
+        //For L2 cache NI
+        x = nodeId % noc_width;
+        y = nodeId / noc_width;
+    }
+    else if ( nodeId < MachineType_base_number(MachineType_Directory) )
+    {
+        //For L1 cache NI
+        nodeId = nodeId - MachineType_base_number(MachineType_L1Cache);
+        x = nodeId % noc_width;
+        y = nodeId / noc_width;
+
+    }
+    else if ( nodeId < MachineType_base_number(MachineType_SimicsNetworkPort) )
+    {
+        //For Directory NI
+        //Here, for directory NI, we hardcode the position of each directory
+        //Look at the Network File to figure out the locations
+        //In current Network File, the locations are 8 11 20 23
+
+        nodeId = nodeId - MachineType_base_number(MachineType_Directory);
+
+        switch(nodeId)
+        {
+            case 0:
+                x = 8 % noc_width;
+                y = 8 / noc_width;
+                break;
+            case 1:
+                x = 11 % noc_width;
+                y = 11 / noc_width;
+                break;
+            case 2:
+                x = 20 % noc_width;
+                y = 20 / noc_width;
+                break;
+            case 3:
+                x = 23 % noc_width;
+                y = 23 / noc_width;
+                break;
+            default:
+                assert(0 && "Error!");
+                break;
+        }
+    }
+    else if ( nodeId < MachineType_base_number(MachineType_NUM) )
+    {
+        //For SimicsNetworkPort NI
+        nodeId = nodeId - MachineType_base_number(MachineType_SimicsNetworkPort);
+        x = nodeId % noc_width;
+        y = nodeId / noc_width;
+    }
+    else
+    {
+        assert(0 && "Invalid nodeId");
+    }
+
+    return make_pair(x, y);
+}
+
+pair<int, int> GarnetNetwork_d::findLocation(int nodeId)
+{
+    int x, y; // x is the column index; y is the row index
+    int noc_width = NOC_WIDTH; 
+    //To verify whether the function works correctly, check with Network File
+    if ( nodeId < MachineType_base_number(MachineType_L1Cache) 
+            && nodeId >= MachineType_base_number(MachineType_L2Cache) )
+    {
+        //For L2 cache NI
+        x = nodeId % noc_width;
+        y = nodeId / noc_width;
+    }
+    else if ( nodeId < MachineType_base_number(MachineType_Directory) )
+    {
+        //For L1 cache NI
+        nodeId = nodeId - MachineType_base_number(MachineType_L1Cache);
+        x = nodeId % noc_width;
+        y = nodeId / noc_width;
+
+    }
+    else if ( nodeId < MachineType_base_number(MachineType_SimicsNetworkPort) )
+    {
+        //For Directory NI
+        //Here, for directory NI, we hardcode the position of each directory
+        //Look at the Network File to figure out the locations
+        //In current Network File, the locations are 8 11 20 23
+        
+        nodeId = nodeId - MachineType_base_number(MachineType_Directory);
+        
+        switch(nodeId)
+        {
+            case 0:
+                x = 8 % noc_width;
+                y = 8 / noc_width;
+                break;
+            case 1:
+                x = 11 % noc_width;
+                y = 11 / noc_width;
+                break;
+            case 2:
+                x = 20 % noc_width;
+                y = 20 / noc_width;               
+                break;
+            case 3:
+                x = 23 % noc_width;
+                y = 23 / noc_width;
+                break;
+            default:
+                assert(0 && "Error!");
+                break;
+        }
+    }
+    else if ( nodeId < MachineType_base_number(MachineType_NUM) )
+    {
+        //For SimicsNetworkPort NI
+        nodeId = nodeId - MachineType_base_number(MachineType_SimicsNetworkPort);
+        x = nodeId % noc_width;
+        y = nodeId / noc_width;
+    }
+    else
+    {
+        assert(0 && "Invalid nodeId");
+    }
+
+    return make_pair(x, y); 
+}
+
+// this function is used to detect whether the circuit path from src to dest
+// will conflict with the existing paths in the circuit network layer: CirNetLayer
+bool GarnetNetwork_d::CirNetHasNoConflict(int CirNetLayer, int src, int dest, bool preFreeFlag)
+{//flag is boolean variable to determine whether consider the preFree paths when dectecting the conflicts
+ // if flag = true, then we consider the preFree paths
+ // otherwise, we don't consider the preFree paths
+    int i = CirNetLayer;
+    bool flag = true;
+    for (int j = 0; j < m_circuitnet_ptr[i]->m_circuit_paths.size(); j++)
+    {
+        for (int k = 0; k < m_circuitnet_ptr[i]->m_circuit_paths[j].size(); k++)
+        {
+            if (m_circuitnet_ptr[i]->m_circuit_preFree[j][k] == true && !preFreeFlag)
+            {
+                //assert(m_circuitnet_ptr[i]->m_circuit_preBuild[j][k] == false);
+                continue;
+            }
+            if (m_circuitnet_ptr[i]->m_circuit_paths[j][k] == BUILD
+                    || m_circuitnet_ptr[i]->m_circuit_paths[j][k] == FINISH
+                    || (m_circuitnet_ptr[i]->m_circuit_preBuild[j][k] == true
+                        && (j != src || k != dest)) )
+            { 
+                
+                if (src == j || dest == k)
+                    return false;
+
+                //if (m_id == j || destID == k)
+                //{
+                //    flag = false;
+                //}                        
+                //else
+                //{
+                //assert(0 && "Test!!!!");
+                //flag = CirNetConflictNotDetected(i, j, k, (int)m_id, (int)destID); 
+                flag = CirNetConflictNotDetected(i, j, k, src, dest); 
+                
+                // circuit network layer, src1, dest1, src2, dest2
+                //}
+            }
+            if (flag == false)
+            {
+                if(src == 11 && dest == 51)
+                {
+                    cout << "Conflicts are detected: the path from 11 to 51 conflicts with the path from " 
+                        <<  j << " to " << k << endl;
+                }
+                return false;
+            }
+            //                            break;
+        }
+        //                    if (flag == false)
+        //                        break;
+    }
+
+    return true;
+}
+
+bool GarnetNetwork_d::CirNetConflictNotDetected(int CirNetLayer, int src1, int dest1, int src2, int dest2) 
+{
+//    cerr << "cirLayer: " << CirNetLayer << " ; src1: " << src1
+//        << " ; dest1: " << dest1 << " ; src2: " << src2 << " ; dest2: " << dest2 << endl;
+
+    pair<int, int> src1Loc = findLocation(src1);
+    pair<int, int> dest1Loc = findLocation(dest1);
+    pair<int, int> src2Loc = findLocation(src2);
+    pair<int, int> dest2Loc = findLocation(dest2);
+    int src1_x = src1Loc.first;
+    int src1_y = src1Loc.second;
+    int dest1_x = dest1Loc.first;
+    int dest1_y = dest1Loc.second;
+
+    int src2_x = src2Loc.first;
+    int src2_y = src2Loc.second;
+    int dest2_x = dest2Loc.first;
+    int dest2_y = dest2Loc.second;
+
+    //if (accNode / NOC_WIDTH == accNode2 /NOC_WIDTH) // accNode in the same row
+    if ( src1_y == src2_y ) //src1 and src2 in the same row
+    {                    
+        //set<int>::iterator iter = iit->second.begin();
+        //set<int>::iterator iter2 = iit2->second.begin();
+        //if (accNode % NOC_WIDTH == accNode2 % NOC_WIDTH)
+        if (src1_x == src2_x)
+        {
+            //if (( (*iter) % NOC_WIDTH < accNode % NOC_WIDTH 
+            //            && (*iter2) % NOC_WIDTH > accNode % NOC_WIDTH)
+            //        || ((*iter) % NOC_WIDTH > accNode % NOC_WIDTH
+            //            && (*iter2) % NOC_WIDTH < accNode % NOC_WIDTH))
+            //if ((dest1_x <= src1_x && dest2_x >= src1_x) || (dest1_x >= src1_x && dest2_x <= src1_x))
+            if ((dest1_x < src1_x && dest2_x < src2_x) || (dest1_x > src1_x && dest2_x > src2_x))
+            {
+                return false;
+                // has conflicts
+            }
+            if( dest1_x == dest2_x )
+            {
+                if((dest1_y < src1_y && dest2_y < src2_y) || (dest1_y > src1_y && dest2_y > src2_y))
+                {
+                    return false;
+                }
+                else
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                // no  conflicts
+                return true;
+            }
+        }
+        //else if ( accNode % NOC_WIDTH < accNode2 % NOC_WIDTH ) 
+        else if ( src1_x < src2_x ) 
+        {
+            if ( dest1_x != dest2_x )
+            {
+                if ((dest1_x < src1_x && dest2_x < src1_x)
+                        || (dest1_x > src2_x && dest2_x > src2_x))
+                    return false;
+                else
+                {
+                    // no conflicts
+                    return true;
+                }
+            }
+            else
+            {
+                if (dest1_x < src1_x || dest1_x > src2_x)
+                    return false;
+
+                // has conflicts
+                //flag_overlap = true;
+                if ((dest1_y < src1_y && dest2_y < src2_y) 
+                        || (dest1_y > src1_y && dest2_y > src2_y))
+                    return false;
+                else
+                    return true;
+            }
+        }
+        else
+        {
+            if ( dest1_x != dest2_x )
+            {
+                if ((dest1_x < src2_x && dest2_x < src2_x)
+                        || (dest1_x > src1_x && dest2_x > src1_x))
+                    return false;
+                else
+                {
+                    // no conflicts
+                    return true;
+                }
+            }
+            else
+            {
+                if (dest1_x < src2_x || dest1_x > src1_x)
+                    return false;
+
+                // has conflicts
+                //flag_overlap = true;
+                if ((dest1_y < src1_y && dest2_y < src2_y) 
+                        || (dest1_y > src1_y && dest2_y > src2_y))
+                    return false;
+                else
+                    return true;
+            }
+        }
+    }
+    else if ( src1_y < src2_y ) // src2 is below src1
+    {
+        //set<int>::iterator iter = iit->second.begin();
+        //set<int>::iterator iter2 = iit2->second.begin();
+        //if (accNode % NOC_WIDTH == accNode2 % NOC_WIDTH)
+        if (src1_x == src2_x)
+        {
+            //if ( (*iter) % NOC_WIDTH != (*iter2) % NOC_WIDTH )                                      
+            if ( dest1_x != dest2_x )                                      
+            {
+                // no conflicts
+                return true;
+            }
+            else
+            {
+                //if ( (*iter) / NOC_WIDTH > accNode2 /NOC_WIDTH 
+                //        || (*iter2) / NOC_WIDTH < accNode /NOC_WIDTH
+                //        || (*iter) / NOC_WIDTH > (*iter2) / NOC_WIDTH )
+                //if ( dest1_y > src2_y || dest2_y < src2_y || dest1_y > dest2_y )
+                /*cout << "dest2_y: " << dest2_y;
+                cout << " dest1_y: " << dest1_y;
+                cout << " src1_y: " << src1_y;
+                cout << " src2_y: " << src2_y << endl;
+                */
+                if ( (dest2_y < src1_y && dest1_y < src1_y)
+                        || (dest2_y > src2_y && dest1_y > src2_y))              
+                {
+                    // has conflicts
+                    //flag_overlap = true;
+                    return false;
+                }
+                else
+                { 
+                    // no conflicts
+                    return true;
+                }
+            }
+        }
+        //else if ( accNode % NOC_WIDTH < accNode2 % NOC_WIDTH ) 
+        else if ( src1_x < src2_x ) 
+        {
+            //if ( (*iter) % NOC_WIDTH != (*iter2) % NOC_WIDTH )                                      
+            if ( dest1_x != dest2_x )                                      
+            {
+                // no conflicts
+                return true;
+            }
+            else
+            {
+                //if ( (*iter) / NOC_WIDTH > accNode2 /NOC_WIDTH 
+                //        || (*iter2) / NOC_WIDTH < accNode /NOC_WIDTH
+                //        || (*iter) / NOC_WIDTH > (*iter2) / NOC_WIDTH )
+                //if ( dest1_y > src2_y || dest2_y < src1_y || dest1_y > dest2_y )
+                if ( (dest2_y < src1_y && dest1_y < src1_y)
+                        || (dest2_y > src2_y && dest1_y > src2_y))                            
+                {
+                    // has conflicts
+                    //flag_overlap = true;
+                    return false;
+                }
+                else
+                { 
+                    // no conflicts
+                    return true;
+                }
+            }
+        }
+        else
+        {
+            //if ( (*iter) % NOC_WIDTH != (*iter2) % NOC_WIDTH )                                      
+            if ( dest1_x != dest2_x )
+            {
+                // no conflicts
+                return true;
+            }
+            else
+            {
+                //if ( (*iter) / NOC_WIDTH > accNode2 /NOC_WIDTH 
+                //        || (*iter2) / NOC_WIDTH < accNode /NOC_WIDTH
+                //        || (*iter) / NOC_WIDTH > (*iter2) / NOC_WIDTH )
+                //if ( dest1_y > src2_y || dest2_y < src1_y || dest1_y > dest2_y )
+                if ( (dest2_y < src1_y && dest1_y < src1_y)
+                        || (dest2_y > src2_y && dest1_y > src2_y))                                            
+                {
+                    // has conflicts
+                    // flag_overlap = true;
+                    return false;
+                }
+                else
+                { 
+                    // no conflicts
+                    return true;
+                }
+            }
+        }
+    }
+    else // src2 is above src1 src1_y > src2_y
+    {            
+        //set<int>::iterator iter = iit->second.begin();
+        //set<int>::iterator iter2 = iit2->second.begin();
+        //if (accNode % NOC_WIDTH == accNode2 % NOC_WIDTH)
+        if ( src1_x == src2_x )
+        {
+            //if ( (*iter2) % NOC_WIDTH != (*iter) % NOC_WIDTH )                                      
+            if ( dest2_x != dest1_x )
+            {
+                // no conflicts
+                return true;
+            }
+            else
+            {
+                //if ( (*iter2) / NOC_WIDTH > accNode /NOC_WIDTH 
+                //        || (*iter) / NOC_WIDTH < accNode2 /NOC_WIDTH
+                //        || (*iter2) / NOC_WIDTH > (*iter) / NOC_WIDTH )
+                //if ( dest2_y > src1_y || dest1_y < src2_y || dest2_y > dest1_y )
+                if ( (dest2_y > src1_y && dest1_y > src1_y)
+                        || (dest2_y < src2_y && dest1_y < src2_y))
+                {
+                    // has conflicts
+                    //flag_overlap = true;
+                    return false;
+                }
+                else
+                { 
+                    // no conflicts
+                    return true;
+                }
+            }
+        }
+        //else if ( accNode % NOC_WIDTH < accNode2 % NOC_WIDTH ) 
+        else if ( src1_x < src2_x )
+        {
+            //if ( (*iter2) % NOC_WIDTH != (*iter) % NOC_WIDTH )                                      
+            if ( dest2_x != dest1_x )
+            {
+                // no conflicts
+                return true;
+            }
+            else
+            {
+                //if ( (*iter2) / NOC_WIDTH > accNode /NOC_WIDTH 
+                //        || (*iter) / NOC_WIDTH < accNode2 /NOC_WIDTH
+                //        || (*iter2) / NOC_WIDTH > (*iter) / NOC_WIDTH )
+                //if ( dest2_y > src1_y || dest1_y < src2_y || dest2_y > dest1_y )
+                if ( (dest2_y > src1_y && dest1_y > src1_y)
+                        || (dest2_y < src2_y && dest1_y < src2_y))
+                {
+                    // has conflicts
+                    //flag_overlap = true;
+                    return false;
+                }
+                else
+                { 
+                    // no conflicts
+                    return true;
+                }
+            }
+
+        }
+        else
+        {
+            //if ( (*iter2) % NOC_WIDTH != (*iter) % NOC_WIDTH )                                      
+            if ( dest2_x != dest1_x )
+            {
+                // no conflicts
+                return true;
+            }
+            else
+            {
+                //if ( (*iter2) / NOC_WIDTH > accNode /NOC_WIDTH 
+                //        || (*iter) / NOC_WIDTH < accNode2 /NOC_WIDTH
+                //        || (*iter2) / NOC_WIDTH > (*iter) / NOC_WIDTH )
+                //if( dest2_y > src1_y || dest1_y < src2_y || dest2_y > dest1_y )
+                if ( (dest2_y > src1_y && dest1_y > src1_y)
+                        || (dest2_y < src2_y && dest1_y < src2_y))
+                {
+                    // has conflicts
+                    //flag_overlap = true;
+                    return false;
+                }
+                else
+                { 
+                    // no conflicts
+                    return true;
+                }
+            }
+
+        }
+    }
+    //return true;
+    assert(0 && "Error in check conflicts!");
+}
+
+void GarnetNetwork_d::printCircuitMap()
+{
+    ofstream myfile;
+    myfile.open ("CircuitMap.txt");
+    string outArr[m_circuitnet_ptr.size()][8][4];
+    //myfile << "Writing this to a file.\n";
+    int count = 1;
+    for (int i = 0; i < m_circuitnet_ptr.size(); i++)
+    {
+        for (int j = 0; j < m_circuitnet_ptr[i]->m_circuit_paths.size(); j++)
+        { 
+            for (int k = 0; k < m_circuitnet_ptr[i]->m_circuit_paths[j].size(); k++)
+            {
+                if (m_circuitnet_ptr[i]->m_circuit_paths[j][k] == FINISH)
+                {   
+                    pair<int, int> loc;
+                    string str;
+                    ostringstream oss;
+                    oss << count;
+                    str += oss.str();
+                    str.append("ss ");
+                    loc = findLoc(j);                    
+                    //cout << j <<  " true : x: " << loc.first << " ; y: " << loc.second << " : " << str <<  endl;
+                    if (outArr[i][loc.second][loc.first].compare("0 ") != 0)
+                    {
+                        outArr[i][loc.second][loc.first].append(str); 
+                    }
+                    else
+                    {
+                        outArr[i][loc.second][loc.first].clear();
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    str.clear();
+                    oss.clear();
+                    str += oss.str();
+                    str.append("dd ");
+                    loc = findLoc(k);
+                    //cout << k <<  ": true x: " << loc.first << " ; y: " << loc.second << " : " << str << endl;
+                    if (outArr[i][loc.second][loc.first].compare("0 ") != 0)
+                    {
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    else
+                    {
+                        outArr[i][loc.second][loc.first].clear();
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    count++;
+                    //assert(0 && "test !!!");
+                }
+                else if (m_circuitnet_ptr[i]->m_circuit_paths[j][k] == FREE)
+                {   
+                    pair<int, int> loc;
+                    string str;
+                    ostringstream oss;
+                    oss << count;
+                    str += oss.str();
+                    str.append("Fs ");
+                    loc = findLoc(j);                    
+                    //cout << j <<  " true : x: " << loc.first << " ; y: " << loc.second << " : " << str <<  endl;
+                    if (outArr[i][loc.second][loc.first].compare("0 ") != 0)
+                    {
+                        outArr[i][loc.second][loc.first].append(str); 
+                    }
+                    else
+                    {
+                        outArr[i][loc.second][loc.first].clear();
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    str.clear();
+                    oss.clear();
+                    str += oss.str();
+                    str.append("Fd ");
+                    loc = findLoc(k);
+                    //cout << k <<  ": true x: " << loc.first << " ; y: " << loc.second << " : " << str << endl;
+                    if (outArr[i][loc.second][loc.first].compare("0 ") != 0)
+                    {
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    else
+                    {
+                        outArr[i][loc.second][loc.first].clear();
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    count++;
+                    //assert(0 && "test !!!");
+                }
+                else if(m_circuitnet_ptr[i]->m_circuit_paths[j][k] == BUILD)
+                {
+                    pair<int, int> loc;
+                    string str;
+                    ostringstream oss;
+                    oss << count;
+                    str += oss.str();
+                    str.append("Bs ");
+                    loc = findLoc(j);                    
+                    //cout << j <<  " true : x: " << loc.first << " ; y: " << loc.second << " : " << str <<  endl;
+                    if (outArr[i][loc.second][loc.first].compare("0 ") != 0)
+                    {
+                        outArr[i][loc.second][loc.first].append(str); 
+                    }
+                    else
+                    {
+                        outArr[i][loc.second][loc.first].clear();
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    str.clear();
+                    oss.clear();
+                    str += oss.str();
+                    str.append("Bd ");
+                    loc = findLoc(k);
+                    //cout << k <<  ": true x: " << loc.first << " ; y: " << loc.second << " : " << str << endl;
+                    if (outArr[i][loc.second][loc.first].compare("0 ") != 0)
+                    {
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    else
+                    {
+                        outArr[i][loc.second][loc.first].clear();
+                        outArr[i][loc.second][loc.first].append(str);
+                    }
+                    count++;
+                    //assert(0 && "test !!!");
+                }
+                else
+                {
+                    pair<int, int> loc;
+                    string str;
+                    str.append("0 ");
+                    loc = findLoc(j);
+                    //cout << j <<  " false : x: " << loc.first << " ; y: " << loc.second << " : " << str << endl;
+                    if (outArr[i][loc.second][loc.first].compare("") == 0)
+                        outArr[i][loc.second][loc.first].append(str);
+                    str.clear();
+                    str.append("0 ");
+                    loc = findLoc(k);
+                    //cout << k <<  " false : x: " << loc.first << " ; y: " << loc.second << " : " << str << endl;
+                    if (outArr[i][loc.second][loc.first].compare("") == 0)
+                        outArr[i][loc.second][loc.first].append(str);
+                }
+            }
+        }
+    }
+    
+    for(int i = 0; i < m_circuitnet_ptr.size(); i++)
+    {
+        myfile << i << "\n";
+        for(int j = 0; j < 8; j++)
+        {
+            for(int k = 0; k < 4; k++)
+            {
+                myfile << outArr[i][j][k] << " ; ";
+            }
+            myfile << "\n";
+        }
+
+        myfile << "\n";
+    }
+
+    myfile.close();
+}
+
+void GarnetNetwork_d::streamDataCSCount(MsgPtr msg_ptr, int numFlits)
+{
+    RequestMsg *request_msg_ptr = dynamic_cast<RequestMsg*>(msg_ptr.ref());
+    ResponseMsg *response_msg_ptr = dynamic_cast<ResponseMsg*>(msg_ptr.ref());
+    CacheMsg *cache_msg_ptr = dynamic_cast<CacheMsg*>(msg_ptr.ref());
+
+    if (request_msg_ptr != NULL)
+    {
+        assert(response_msg_ptr == NULL);
+        assert(cache_msg_ptr == NULL);
+        assert(request_msg_ptr->m_Type == CoherenceRequestType_BIC_INTRANS_DATA
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_OUTTRANS_DATA
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_READ
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_ALLOCATE
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_FREE
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_INV
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_WRITE);
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_INTRANS_DATA)
+        {
+            if(m_streamData_cs.find("BIC_INTRANS_DATA") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_INTRANS_DATA"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_INTRANS_DATA"] += numFlits;
+            }
+        }
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_OUTTRANS_DATA)
+        {
+            if(m_streamData_cs.find("BIC_OUTTRANS_DATA") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_OUTTRANS_DATA"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_OUTTRANS_DATA"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_WRITE)
+        {
+            if(m_streamData_cs.find("BIC_WRITE") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_WRITE"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_WRITE"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_READ)
+        {
+            if(m_streamData_cs.find("BIC_READ") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_READ"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_READ"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_ALLOCATE)
+        {
+            if(m_streamData_cs.find("BIC_ALLOC") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_ALLOC"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_ALLOC"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_FREE)
+        {
+            if(m_streamData_cs.find("BIC_FREE") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_FREE"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_FREE"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_INV)
+        {
+            if(m_streamData_cs.find("BIC_INV") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_INV"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_INV"] += numFlits;
+            }
+        }
+
+
+    }
+
+    if (response_msg_ptr != NULL)
+    {
+        assert(request_msg_ptr == NULL);
+        assert(cache_msg_ptr == NULL);
+        
+        assert(response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA_COPY
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_WRITE_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_ALLOCATE_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_FREE_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_INTRANS_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_READ_ACK);
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA_COPY )
+        {
+            if(m_streamData_cs.find("BIC_MEMORY_DATA_COPY") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_MEMORY_DATA_COPY"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_MEMORY_DATA_COPY"] += numFlits;
+            }
+        }
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA )
+        {
+            if(m_streamData_cs.find("BIC_MEMORY_DATA") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_MEMORY_DATA"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_MEMORY_DATA"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_READ_ACK )
+        {
+            if(m_streamData_cs.find("BIC_READ_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_READ_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_READ_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_WRITE_ACK )
+        {
+            if(m_streamData_cs.find("BIC_WRITE_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_WRITE_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_WRITE_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_ALLOCATE_ACK )
+        {
+            if(m_streamData_cs.find("BIC_ALLOC_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_ALLOC_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_ALLOC_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_FREE_ACK )
+        {
+            if(m_streamData_cs.find("BIC_FREE_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_FREE_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_FREE_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_INTRANS_ACK )
+        {
+            if(m_streamData_cs.find("BIC_INTRANS_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_INTRANS_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_INTRANS_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS_ACK )
+        {
+            if(m_streamData_cs.find("BIC_OUTTRANS_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_OUTTRANS_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_OUTTRANS_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS )
+        {
+            if(m_streamData_cs.find("BIC_OUTTRANS") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_OUTTRANS"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_OUTTRANS"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_ACK )
+        {
+            if(m_streamData_cs.find("BIC_MEM_ACK") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_MEM_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_MEM_ACK"] += numFlits;
+            }
+
+        }
+
+    }
+/*
+    if (cache_msg_ptr != NULL)
+    {
+        assert(request_msg_ptr == NULL);
+        assert(response_msg_ptr == NULL);
+
+        assert( cache_msg_ptr->m_Type == CacheRequestType_BIC_WRITE);
+        if ( cache_msg_ptr->m_Type == CacheRequestType_BIC_WRITE)
+        {
+            if(m_streamData_cs.find("BIC_WRITE") == m_streamData_cs.end())
+            {
+                m_streamData_cs["BIC_WRITE"] = numFlits;
+            }
+            else
+            {
+                m_streamData_cs["BIC_WRITE"] += numFlits;
+            }
+
+        }
+    }*/
+}
+
+void GarnetNetwork_d::streamDataPSCount(MsgPtr msg_ptr, int numFlits)
+{
+    RequestMsg *request_msg_ptr = dynamic_cast<RequestMsg*>(msg_ptr.ref());
+    ResponseMsg *response_msg_ptr = dynamic_cast<ResponseMsg*>(msg_ptr.ref());
+    CacheMsg *cache_msg_ptr = dynamic_cast<CacheMsg*>(msg_ptr.ref());
+
+    if (request_msg_ptr != NULL)
+    {
+        assert(response_msg_ptr == NULL);
+        assert(cache_msg_ptr == NULL);
+        assert(request_msg_ptr->m_Type == CoherenceRequestType_BIC_INTRANS_DATA
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_OUTTRANS_DATA
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_READ
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_ALLOCATE
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_FREE
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_INV
+                || request_msg_ptr->m_Type == CoherenceRequestType_BIC_WRITE);
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_INTRANS_DATA)
+        {
+            if(m_streamData_ps.find("BIC_INTRANS_DATA") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_INTRANS_DATA"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_INTRANS_DATA"] += numFlits;
+            }
+        }
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_OUTTRANS_DATA)
+        {
+            if(m_streamData_ps.find("BIC_OUTTRANS_DATA") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_OUTTRANS_DATA"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_OUTTRANS_DATA"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_WRITE)
+        {
+            if(m_streamData_ps.find("BIC_WRITE") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_WRITE"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_WRITE"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_READ)
+        {
+            if(m_streamData_ps.find("BIC_READ") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_READ"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_READ"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_ALLOCATE)
+        {
+            if(m_streamData_ps.find("BIC_ALLOC") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_ALLOC"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_ALLOC"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_FREE)
+        {
+            if(m_streamData_ps.find("BIC_FREE") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_FREE"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_FREE"] += numFlits;
+            }
+        }
+
+        if(request_msg_ptr->m_Type == CoherenceRequestType_BIC_INV)
+        {
+            if(m_streamData_ps.find("BIC_INV") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_INV"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_INV"] += numFlits;
+            }
+        }
+
+
+    }
+
+    if (response_msg_ptr != NULL)
+    {
+        assert(request_msg_ptr == NULL);
+        assert(cache_msg_ptr == NULL);
+        
+        assert(response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA_COPY
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_WRITE_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_ALLOCATE_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_FREE_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_INTRANS_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_ACK
+                || response_msg_ptr->m_Type == CoherenceResponseType_BIC_READ_ACK);
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA_COPY )
+        {
+            if(m_streamData_ps.find("BIC_MEMORY_DATA_COPY") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_MEMORY_DATA_COPY"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_MEMORY_DATA_COPY"] += numFlits;
+            }
+        }
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_DATA )
+        {
+            if(m_streamData_ps.find("BIC_MEMORY_DATA") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_MEMORY_DATA"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_MEMORY_DATA"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_READ_ACK )
+        {
+            if(m_streamData_ps.find("BIC_READ_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_READ_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_READ_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_WRITE_ACK )
+        {
+            if(m_streamData_ps.find("BIC_WRITE_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_WRITE_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_WRITE_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_ALLOCATE_ACK )
+        {
+            if(m_streamData_ps.find("BIC_ALLOC_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_ALLOC_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_ALLOC_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_FREE_ACK )
+        {
+            if(m_streamData_ps.find("BIC_FREE_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_FREE_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_FREE_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_INTRANS_ACK )
+        {
+            if(m_streamData_ps.find("BIC_INTRANS_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_INTRANS_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_INTRANS_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS_ACK )
+        {
+            if(m_streamData_ps.find("BIC_OUTTRANS_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_OUTTRANS_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_OUTTRANS_ACK"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_OUTTRANS )
+        {
+            if(m_streamData_ps.find("BIC_OUTTRANS") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_OUTTRANS"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_OUTTRANS"] += numFlits;
+            }
+
+        }
+
+        if ( response_msg_ptr->m_Type == CoherenceResponseType_BIC_MEMORY_ACK )
+        {
+            if(m_streamData_ps.find("BIC_MEM_ACK") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_MEM_ACK"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_MEM_ACK"] += numFlits;
+            }
+
+        }
+
+    }
+/*
+    if (cache_msg_ptr != NULL)
+    {
+        assert(request_msg_ptr == NULL);
+        assert(response_msg_ptr == NULL);
+
+        assert( cache_msg_ptr->m_Type == CacheRequestType_BIC_WRITE);
+        if ( cache_msg_ptr->m_Type == CacheRequestType_BIC_WRITE)
+        {
+            if(m_streamData_ps.find("BIC_WRITE") == m_streamData_ps.end())
+            {
+                m_streamData_ps["BIC_WRITE"] = numFlits;
+            }
+            else
+            {
+                m_streamData_ps["BIC_WRITE"] += numFlits;
+            }
+
+        }
+    }*/
+}

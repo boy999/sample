@@ -1,0 +1,7 @@
+digraph G {
+func1_2->bb27_outer_4 [label="110"]
+bb27_outer_4->bb19_preheader_5 [label="10100"]
+bb19_preheader_5->bb2_6 [label="1.001e+06"]
+bb2_6->func2_1 [label="1.001e+06"]
+main_3->func1_2 [label="2"]
+}

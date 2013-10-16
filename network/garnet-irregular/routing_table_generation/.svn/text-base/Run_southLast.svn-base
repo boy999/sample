@@ -1,0 +1,9 @@
+./southLast test.cut 4 unified_netWeight_4 /dev/null test_slr_route test_slr_splitted_channels > test_slr.routelog
+
+# Paramters Description:
+# 1) input: shortcut file
+# 2) input: number of shortcuts
+# 3) input: communication profiling file
+# 4) input: critical communication file
+# 5) output: routing table
+# 6) output: stats of split channels 

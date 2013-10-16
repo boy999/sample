@@ -1,0 +1,12 @@
+digraph G {
+func1_1->Loop1_1 [label="10"]
+func1_2->Loop1_2 [label="100"]
+Loop1_1->Loop2_1 [label="100"]
+Loop1_2->Loop2_2 [label="10000"]
+Loop2_1->Loop3_1 [label="1000"]
+Loop2_2->Loop3_2 [label="1e+06"]
+Loop3_1->func2_1 [label="1.001e+06"]
+Loop3_2->func2_2 [label="1.001e+06"]
+main->func1_1 [label="1"]
+main->func1_2 [label="2"]
+}

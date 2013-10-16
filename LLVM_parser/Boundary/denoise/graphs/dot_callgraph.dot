@@ -1,0 +1,14 @@
+digraph G {
+denoise_CPU_stage1_1->bb390_outer_5 [label="42"]
+bb390_outer_5->bb381_preheader_6 [label="588"]
+bb381_preheader_6->bb2_7 [label="8232"]
+denoise_CPU_stage2_2->bb404_outer_8 [label="42"]
+bb404_outer_8->bb395_preheader_9 [label="588"]
+bb395_preheader_9->bb10_10 [label="8232"]
+denoise_3->denoise_CPU_stage2_2 [label="3"]
+denoise_3->denoise_CPU_stage1_1 [label="3"]
+main_4->denoise_3 [label="1"]
+main_4->bb60_preheader_11 [label="16"]
+bb60_preheader_11->bb51_preheader_12 [label="256"]
+bb51_preheader_12->bb27_13 [label="4096"]
+}

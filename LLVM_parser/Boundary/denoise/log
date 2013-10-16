@@ -1,0 +1,21 @@
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp23 = load float* %tmp22, align 4		; <float> [#uses=2]
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp92 = load float* %tmp91, align 4		; <float> [#uses=1]
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp123 = load float* %tmp122, align 4		; <float> [#uses=1]
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp154 = load float* %tmp153, align 4		; <float> [#uses=1]
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp184 = load float* %tmp183, align 4		; <float> [#uses=1]
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp215 = load float* %tmp214, align 4		; <float> [#uses=1]
+Loop carried dep between : 
+	store float %tmp384, float* %tmp22, align 4
+	%tmp247 = load float* %tmp246, align 4		; <float> [#uses=1]

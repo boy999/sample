@@ -1,0 +1,15 @@
+#Makefile.include for the garnet detailed network
+CIRNET_VPATH := network/circuit-switch-pipeline
+CIRNET_SRC_CPP = \
+	CircuitNetwork.C \
+	NetworkInterface_CN.C \
+	NetworkLink_CN.C \
+	Router_CN.C \
+	InputUnit_CN.C \
+	RoutingUnit_CN.C \
+	Switch_CN.C \
+	OutputUnit_CN.C \
+	flit_CN.C \
+	flitBuffer_CN.C \
+	OutVcState_CN.C \
+

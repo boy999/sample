@@ -1,0 +1,11 @@
+#Makefile.include for the simple network
+NETWORK_VPATH := network/simple
+NETWORK_SRC_CPP = \
+	PerfectSwitch.C \
+	Switch.C \
+	Topology.C \
+	SimpleNetwork.C \
+	Throttle.C
+ifdef SIM_NET_PORTS
+NETWORK_SRC_CPP += SimicsNetworkPort.C
+endif

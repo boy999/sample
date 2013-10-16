@@ -1,0 +1,39 @@
+Loop carried dep between : 
+	store i32 %tmp7, i32* %tmp9, align 4
+	%tmp6 = load i32* %tmp5, align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 1, i32* getelementptr ([200 x i32]* @A, i32 0, i64 0), align 32
+	%tmp9 = load i32* %tmp8, align 4		; <i32> [#uses=3]
+No dep between : 
+	store i32 1, i32* getelementptr ([200 x i32]* @A, i32 0, i64 0), align 32
+	%tmp39 = load i32* getelementptr ([200 x i32]* @A, i32 0, i64 99), align 4		; <i32> [#uses=1]
+No dep between : 
+	store i32 1, i32* getelementptr ([200 x i32]* @A, i32 0, i64 0), align 32
+	%tmp47 = load i32* getelementptr ([200 x i32]* @A, i32 0, i64 100), align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 1, i32* getelementptr ([100 x i32]* @B, i32 0, i64 0), align 32
+	%tmp6.i = load i32* %tmp5.i, align 4		; <i32> [#uses=1]
+No dep between : 
+	store i32 1, i32* getelementptr ([100 x i32]* @B, i32 0, i64 0), align 32
+	%tmp43 = load i32* getelementptr ([100 x i32]* @B, i32 0, i64 99), align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 %tmp7.i, i32* %tmp9.i, align 4
+	%tmp6.i = load i32* %tmp5.i, align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 %tmp7.i, i32* %tmp9.i, align 4
+	%tmp43 = load i32* getelementptr ([100 x i32]* @B, i32 0, i64 99), align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 %tmp22.i, i32* %tmp13, align 4
+	%tmp6.i = load i32* %tmp5.i, align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 %tmp22.i, i32* %tmp13, align 4
+	%tmp43 = load i32* getelementptr ([100 x i32]* @B, i32 0, i64 99), align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 %tmp10, i32* %tmp22, align 4
+	%tmp9 = load i32* %tmp8, align 4		; <i32> [#uses=3]
+Loop carried dep between : 
+	store i32 %tmp10, i32* %tmp22, align 4
+	%tmp39 = load i32* getelementptr ([200 x i32]* @A, i32 0, i64 99), align 4		; <i32> [#uses=1]
+Loop carried dep between : 
+	store i32 %tmp10, i32* %tmp22, align 4
+	%tmp47 = load i32* getelementptr ([200 x i32]* @A, i32 0, i64 100), align 4		; <i32> [#uses=1]

@@ -1,0 +1,18 @@
+PARM_TECH_POINT: 32
+
+PARM_TRANSISTOR_TYPE: NVT
+
+PARM_Freq: 2e9
+
+PARM_v_class: 5
+
+PARM_v_channel: 4
+
+PARM_in_buf_set: 4
+
+PARM_in_share_buf: 0
+
+PARM_pipeline_stages: 4
+
+PARM_flit_width: 64 bits , 8 bytes 
+crossbar port number is 7 for router with four internal link ports (E, W, N, S) and three local link ports(L1, L2, SimPort)

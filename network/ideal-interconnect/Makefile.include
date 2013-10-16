@@ -1,0 +1,7 @@
+#Makefile.include for the garnet detailed network
+IDEAL_INTERCONNECT_VPATH := network/ideal-interconnect
+IDEAL_INTERCONNECT_SRC_CPP = \
+	IdealNetwork.C \
+	NetworkInterface_I.C \
+	flit_I.C \
+	flitBuffer_I.C \

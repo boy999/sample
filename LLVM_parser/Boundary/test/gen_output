@@ -1,0 +1,125 @@
+
+
+	.text
+	.align	16
+	.type	loop_enter,@function
+loop_enter:
+	ret
+	.size	loop_enter, .-loop_enter
+
+
+	.align	16
+	.type	func,@function
+func:
+	pushl	%edi
+	pushl	%esi
+	subl	$4, %esp
+	movl	16(%esp), %esi
+	cmpl	$1, %esi
+	jle	.LBB2_5	# entry.bb17_crit_edge
+.LBB2_1:	# bb.preheader
+	call	loop_enter
+	leal	-1(%esi), %eax
+	leal	-2(%esi), %ecx
+	testl	%ecx, %ecx
+	movl	$1, %edx
+	cmovs	%edx, %eax
+	xorl	%edx, %edx
+.LBB2_2:	# bb
+	movl	$1, %edi
+	addl	B(,%edx,4), %edi
+	incl	%edx
+	movl	%edi, B(,%edx,4)
+	cmpl	%eax, %edx
+	jne	.LBB2_2	# bb
+.LBB2_3:	# bb17.loopexit
+	testl	%ecx, %ecx
+	movl	$2, %eax
+	cmovns	%esi, %eax
+	sarl	$31, %esi
+	xorl	%edx, %edx
+	testl	%ecx, %ecx
+	cmovs	%edx, %esi
+.LBB2_4:	# bb17
+	movl	B(,%eax,4), %eax
+	addl	$4, %esp
+	popl	%esi
+	popl	%edi
+	ret
+.LBB2_5:	# entry.bb17_crit_edge
+	xorl	%esi, %esi
+	movl	$1, %eax
+	jmp	.LBB2_4	# bb17
+	.size	func, .-func
+
+
+	.align	16
+	.globl	main
+	.type	main,@function
+main:
+	pushl	%ebp
+	pushl	%ebx
+	pushl	%edi
+	pushl	%esi
+	subl	$12, %esp
+	movl	$1, A
+	movl	$1, B
+	call	loop_enter
+	xorl	%esi, %esi
+.LBB3_1:	# bb25.outer
+	leal	1(%esi), %edi
+	movl	%edi, %eax
+	sarl	$31, %eax
+	movl	%esi, %eax
+	sarl	$31, %eax
+	xorl	%ebx, %ebx
+.LBB3_2:	# bb3
+	movl	$1, %ebp
+	addl	A(,%esi,4), %ebp
+	movl	%ebp, (%esp)
+	call	func
+	incl	%ebx
+	movl	%eax, B(,%ebx,4)
+	movl	%ebp, A(,%edi,4)
+	cmpl	$100, %ebx
+	jne	.LBB3_2	# bb3
+.LBB3_3:	# bb29
+	incl	%esi
+	cmpl	$100, %esi
+	jne	.LBB3_1	# bb25.outer
+.LBB3_4:	# bb37.split
+	movl	A+396, %eax
+	movl	%eax, 4(%esp)
+	movl	$.str6, (%esp)
+	call	printf
+	movl	B+396, %eax
+	movl	%eax, 4(%esp)
+	movl	$.str17, (%esp)
+	call	printf
+	movl	A+400, %eax
+	addl	$12, %esp
+	popl	%esi
+	popl	%edi
+	popl	%ebx
+	popl	%ebp
+	ret
+	.size	main, .-main
+	.type	B,@object
+	.bss
+	.local	B
+	.comm	B,400,32		# B
+	.type	A,@object
+	.local	A
+	.comm	A,800,32		# A
+	.type	.str6,@object
+	.section	.rodata.str1.1,"aMS",@progbits,1
+	.align	16
+.str6:				# .str6
+	.size	.str6, 25
+	.asciz	"The value of A[99] : %d\n"
+	.type	.str17,@object
+	.align	16
+.str17:				# .str17
+	.size	.str17, 25
+	.asciz	"The value of B[99] : %d\n"
+

@@ -1,0 +1,10 @@
+./aces test.cut 1 unified_netWeight_4 /dev/null test_aces_route test_aces_splitted_channels > test_aces.routelog
+#> newbiring_test.routelog
+
+# Paramters Description:
+# 1) input: shortcut file
+# 2) input: number of shortcuts
+# 3) input: communication profiling file
+# 4) input: critical communication file
+# 5) output: routing table
+# 6) output: stats of split channels 

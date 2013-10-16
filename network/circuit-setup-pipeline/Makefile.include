@@ -1,0 +1,12 @@
+#Makefile.include for the garnet network
+SETUPNET_VPATH := network/circuit-setup-pipeline
+SETUPNET_SRC_CPP = \
+	SetupNetwork.C \
+	NetworkInterface_SN.C \
+	NetworkLink_SN.C \
+	Router_SN.C \
+	flit_SN.C \
+	flitBuffer_SN.C \
+	InVcState_SN.C \
+	OutVcState_SN.C \
+	VCarbiter_SN.C \
